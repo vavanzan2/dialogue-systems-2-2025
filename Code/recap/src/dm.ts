@@ -36,6 +36,7 @@ const dmMachine = setup({
   context: ({ spawn }) => ({
     spstRef: spawn(speechstate, { input: settings }),
     informationState: { latestMove: "ping" },
+    lastResult: "",
   }),
   initial: "Prepare",
   states: {
@@ -57,11 +58,16 @@ const dmMachine = setup({
             Recognising: {
               entry: "sst_listen",
               on: {
-                LISTEN_COMPLETE: "Idle",
-                RECOGNISED: {
-                  actions: raise(({ event }) => ({
+                LISTEN_COMPLETE: {
+                  target: "Idle",
+                  actions: raise(({ context }) => ({
                     type: "SAYS",
-                    value: event.value[0].utterance,
+                    value: context.lastResult,
+                  })),
+                },
+                RECOGNISED: {
+                  actions: assign(({ event }) => ({
+                    lastResult: event.value[0].utterance,
                   })),
                 },
               },

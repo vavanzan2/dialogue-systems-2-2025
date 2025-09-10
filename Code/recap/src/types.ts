@@ -3,7 +3,7 @@ import type { AnyActorRef } from "xstate";
 
 export interface DMContext {
   spstRef: AnyActorRef;
-  //  lastResult: Hypothesis[] | null;
+  lastResult: string;
   // nextUtterance: string;
   informationState: { latestMove: string };
 }
