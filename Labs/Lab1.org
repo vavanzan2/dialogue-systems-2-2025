@@ -62,8 +62,19 @@ Ensure that when the system gives negative contact feedback, and previously aske
 - S: I didn’t hear anything from you. Which day?
 
 Depending on how you solved 2a, this might already work.  
-** Task 2c
-Ensure that the system provides the room information after the repeated questions. 
+
+** Task 2c (1 bonus VG point)
+Ensure that the system provides the room information after several repeated questions. You will need to add another test case to ensure that.
+
+* Task 3 (1 bonus VG point)
+
+Add new rule to SISU (and/or modify existing SISU rules) to support
+other grounding strategies in addition to the negative contact
+feedback according to Larsson (2002, section 3). For instance,
+implement the support for different ways of grounding depending on ASR
+confidence scores. As before, start with a test case covering the
+desired system behaviour.
+
 
 * Troubleshooting using logs
 Logs can be very useful when troubleshooting the implementation. If
