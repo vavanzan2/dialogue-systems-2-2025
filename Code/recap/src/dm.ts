@@ -1,10 +1,9 @@
-import { assign, createActor, raise, setup } from "xstate";
+import { assign, createActor, setup, fromPromise } from "xstate";
 import { speechstate } from "speechstate";
 import type { Settings } from "speechstate";
-
-import type { DMEvents, DMContext } from "./types";
-
-import { KEY } from "./azure";
+import type { DMEvents, DMContext, Message } from "./types";
+import { KEY } from "./azure.ts";
+import { fetchChatCompletion } from "./ollama";
 
 const azureCredentials = {
   endpoint:
@@ -23,97 +22,109 @@ const settings: Settings = {
 
 const dmMachine = setup({
   types: {
-    /** you might need to extend these */
     context: {} as DMContext,
     events: {} as DMEvents,
   },
   actions: {
     sst_prepare: ({ context }) => context.spstRef.send({ type: "PREPARE" }),
+    sst_speak: ({ context, event }) =>
+      context.spstRef.send({
+        type: "SPEAK",
+        value: { utterance: (event as any).value || context.messages[context.messages.length - 1].content },
+      }),
     sst_listen: ({ context }) => context.spstRef.send({ type: "LISTEN" }),
+  },
+  actors: {
+    chatCompletion: fromPromise(async ({ input }: { input: { messages: Message[] } }) => {
+      const response = await fetchChatCompletion(input.messages);
+      return response;
+    }),
   },
 }).createMachine({
   id: "DM",
   context: ({ spawn }) => ({
     spstRef: spawn(speechstate, { input: settings }),
-    informationState: { latestMove: "ping" },
     lastResult: "",
+    messages: [
+      {
+        role: "system",
+        content: "You are a helpful voice assistant. Keep your responses very brief and conversational - maximum 2 short sentences. Use simple, natural language suitable for speech."
+      },
+      {
+        role: "assistant",
+        content: "Hello! I'm your voice assistant. How can I help you?"
+      }
+    ],
   }),
   initial: "Prepare",
   states: {
     Prepare: {
       entry: "sst_prepare",
       on: {
-        ASRTTS_READY: "Main",
+        ASRTTS_READY: "Loop",
       },
     },
-    Main: {
-      type: "parallel",
+    Loop: {
+      initial: "Speaking",
       states: {
-        Interpret: {
-          initial: "Idle",
-          states: {
-            Idle: {
-              on: { SPEAK_COMPLETE: "Recognising" },
-            },
-            Recognising: {
-              entry: "sst_listen",
-              on: {
-                LISTEN_COMPLETE: {
-                  target: "Idle",
-                  actions: raise(({ context }) => ({
-                    type: "SAYS",
-                    value: context.lastResult,
-                  })),
-                },
-                RECOGNISED: {
-                  actions: assign(({ event }) => ({
-                    lastResult: event.value[0].utterance,
-                  })),
-                },
-              },
-            },
+        Speaking: {
+          entry: ({ context }) => {
+            const lastMessage = context.messages[context.messages.length - 1];
+            if (lastMessage.role === "assistant") {
+              context.spstRef.send({
+                type: "SPEAK",
+                value: { utterance: lastMessage.content },
+              });
+            }
+          },
+          on: {
+            SPEAK_COMPLETE: "Ask",
           },
         },
-        Generate: {
-          initial: "Idle",
-          states: {
-            Speaking: {
-              entry: ({ context, event }) =>
-                context.spstRef.send({
-                  type: "SPEAK",
-                  value: { utterance: (event as any).value },
-                }),
-              on: { SPEAK_COMPLETE: "Idle" },
+        Ask: {
+          entry: "sst_listen",
+          on: {
+            RECOGNISED: {
+              actions: assign(({ context, event }) => {
+                const utterance = event.value[0]?.utterance || "";
+                return {
+                  lastResult: utterance,
+                  messages: [
+                    ...context.messages,
+                    { role: "user" as const, content: utterance }
+                  ],
+                };
+              }),
             },
-            Idle: {
-              on: { NEXT_MOVE: "Speaking" },
-            },
+            LISTEN_COMPLETE: "ChatCompletion",
           },
         },
-        Process: {
-          initial: "Select",
-          states: {
-            Select: {
-              always: {
-                guard: ({ context }) =>
-                  context.informationState.latestMove !== "",
-                actions: raise(({ context }) => ({
-                  type: "NEXT_MOVE",
-                  value: context.informationState.latestMove,
-                })),
-                target: "Update",
-              },
+        ChatCompletion: {
+          invoke: {
+            src: "chatCompletion",
+            input: ({ context }) => ({
+              messages: context.messages,
+            }),
+            onDone: {
+              target: "Speaking",
+              actions: assign(({ context, event }) => ({
+                messages: [
+                  ...context.messages,
+                  { role: "assistant" as const, content: event.output }
+                ],
+              })),
             },
-            Update: {
-              entry: assign({ informationState: { latestMove: "" } }),
-              on: {
-                SAYS: {
-                  target: "Select",
-                  actions: assign(({ event }) => ({
-                    informationState: { latestMove: event.value },
-                  })),
-                },
-              },
+            onError: {
+              target: "Speaking",
+              actions: assign(({ context }) => ({
+                messages: [
+                  ...context.messages,
+                  { 
+                    role: "assistant" as const, 
+                    content: "Sorry, I could not understand that. Could you try again?" 
+                  }
+                ],
+              })),
             },
           },
         },
@@ -127,7 +138,7 @@ const dmActor = createActor(dmMachine, {}).start();
 dmActor.subscribe((state) => {
   console.group("State update");
   console.log("State value:", state.value);
-  console.log("State context:", state.context);
+  console.log("Messages:", state.context.messages);
   console.groupEnd();
 });
 
@@ -135,6 +146,7 @@ export function setupButton(element: HTMLButtonElement) {
   element.addEventListener("click", () => {
     dmActor.send({ type: "CLICK" });
   });
+  
   dmActor.subscribe((snapshot) => {
     const meta: { view?: string } = Object.values(
       snapshot.context.spstRef.getSnapshot().getMeta()
